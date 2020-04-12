@@ -1,0 +1,425 @@
+#define NUM_PATTERNS 3
+
+class LedPattern : public BaseLEDController {
+  protected:
+  
+  byte num_colour_schemes = 6;
+  //ColourScheme* colour_scheme;
+  public:
+  static LedPattern* GetRandom(); 
+  virtual ColourScheme* getColourMode() {
+    //byte option_count = countSetBits(colour_modes);
+    byte choice = random(0, NUM_COLOUR_MODES);
+    ColourScheme* colour_scheme;
+    Serial.print("Choosing colour mode: ");
+    Serial.println(choice+1);
+    colour_scheme = colour_schemes[choice];
+    /*
+    delete[] colour_scheme;
+    switch (choice) {
+      case 0:
+        colour_scheme= new colourRainbow(0, 3); //Static rainbow
+        break;
+      case 1:
+        colour_scheme= new colourCycleBeatRed();
+        break;
+      case 2:
+        colour_scheme= new colourChangeOnBeat();
+        break;
+      case 3:
+        colour_scheme= new colourRedHeart();
+        break;
+      case 4:
+        colour_scheme= new colourRandom();
+        break;
+      case 5:
+        colour_scheme= new colourRainbow(3, 3); //Moving rainbow
+        break;
+      default:
+        colour_scheme= new colourRainbow(3, 3); 
+        break;
+    }
+    */
+    colour_scheme->initialise();
+    return colour_scheme;
+  }
+};
+
+class patternBeatHeight : public LedPattern  {
+  byte height;
+  void frameAction() {
+      height = map(beat_level, 0, 255, 0, LEDS_PER_SIDE);
+  }
+  void setLED(byte i) {
+      if (i <= height)  {
+        setLEDValue(BOTH_SIDES, i, max_brightness);
+      } else {
+        setLEDValue(BOTH_SIDES, i, 0);
+      }
+  }
+};
+
+class patternSolidBeatPulse : public LedPattern  {
+  private:
+  byte brightness;
+  void frameAction()  {
+    brightness = map(beat_level, 0,255, max_brightness>>1, max_brightness);
+  }
+  void setLED(byte i) {      
+    setLEDValue(BOTH_SIDES, i, brightness);
+  }
+};
+
+class patternRandomSparkle : public LedPattern  {
+  public:
+  patternRandomSparkle()  {
+    max_random_factor = 3;
+  }
+  private:
+  unsigned long sparkle_bitmask;
+  void extra_init() {
+    skip_frames = 3+(random_factor<<1);
+  }
+  void frameAction() {
+      sparkle_bitmask = random(0, ((unsigned long) 1)<<(LEDS_PER_SIDE));
+  }
+  void setLED(byte i) {
+    bool led_on;
+    led_on = ((((unsigned long) 1)<<i)&sparkle_bitmask);
+    setLEDValue(BOTH_SIDES, i, led_on ? max_brightness : 0);
+  }
+};
+
+class patternMovingSegments : public LedPattern  {
+  public:
+  patternMovingSegments(void)  {
+    max_random_factor=2;
+    skip_frames=1;
+  }
+  private:
+  byte active_segment, segment_width, segment_min, segment_max, move_delay;
+  bool overlap;
+  void extra_init() {
+    move_delay = random_factor;
+  }
+  void frameAction() {
+    static byte skip_count;
+    if (skip_count) {
+      skip_count--;
+    } else {
+      if (active_segment < LEDS_PER_SIDE-1) {
+        active_segment++;
+      } else {
+        active_segment =0;
+      }
+      skip_count=move_delay;
+    }
+    segment_width = map(beat_level, 0, 255, 1, 8);
+    overlap=false;
+    segment_min = active_segment - (segment_width>>1);
+    // Handle underflow
+    if (segment_min >= LEDS_PER_SIDE) {
+      segment_min = LEDS_PER_SIDE-(255-segment_min)-1;
+      overlap=true;
+    }      
+    segment_max = active_segment + (segment_width>>1);      
+    // Handle overflow
+    if (segment_max >= LEDS_PER_SIDE) {
+      segment_max = segment_max - LEDS_PER_SIDE;
+      overlap=true;
+    }
+    Serial.print(active_segment);
+    Serial.print(' ');
+    Serial.print(segment_min);
+    Serial.print(' ');
+    Serial.print(segment_max);
+    Serial.println();
+  }
+  void setLED(byte i) {
+    bool led_on;
+    if (overlap)  {
+      led_on = (i >= segment_min) | (i <=  segment_max);
+    } else {
+      led_on = (i >= segment_min) & (i <=  segment_max);
+    }
+    setLEDValue(LEFT_SIDE, i, led_on ? max_brightness : 0 );
+    setLEDValue(RIGHT_SIDE, LEDS_PER_SIDE-i-1, led_on ? max_brightness : 0);
+  }
+};
+
+class patternMovingSineWave : public LedPattern {
+    //Lights move in sine wave of varying length
+  public:  
+  patternMovingSineWave() {
+    max_random_factor=3;
+  }
+  private:
+  byte frame_time;
+  void frameAction()  {
+    frame_time += 4;//1+ random_factor;
+  }
+  void setLED(byte i) {
+    setLEDValue(BOTH_SIDES, i, map(sin8(map(i, 0, LEDS_PER_SIDE,0,127<<random_factor)+frame_time), 0, 255, 0 ,max_brightness));
+  }
+};
+
+class patternSineWavePulse : public LedPattern {
+  //All lights pulsing brightness with sine wave
+  public:
+  patternSineWavePulse()  {
+    max_random_factor=3;
+  }
+  private:
+  byte frame_time;
+  void frameAction()  {
+    frame_time += 4+ random_factor;
+  }
+  void setLED(byte i) {
+    setLEDValue(BOTH_SIDES, i, map(sin8(frame_time), 0, 255, 0, max_brightness));
+  }
+};
+
+class patternAlternateSides : public LedPattern {
+  //Half heart is lit then lights move to other side with beat
+  private:
+  byte frame_time, animate_frame;
+  bool side;
+  void frameAction()  {
+    if (new_beat_pattern()) {
+        side = !side;
+        animate_frame = LEDS_PER_SIDE/2;
+    }
+    if (animate_frame)  {
+      animate_frame--;
+    }
+  }
+  void setLED(byte i) {
+    bool led_on_left, led_on_right;
+    if (animate_frame)  {
+      if (side) {
+        // Transitioning from left to right side
+        led_on_left = (i > (LEDS_PER_SIDE - animate_frame)) | (i < animate_frame);
+        led_on_right = (i > (LEDS_PER_SIDE/2 + animate_frame)) | (i < (LEDS_PER_SIDE/2 - animate_frame));
+      } else {
+        led_on_right = (i > (LEDS_PER_SIDE - animate_frame)) | (i < animate_frame);
+        led_on_left = (i > (LEDS_PER_SIDE/2 + animate_frame)) | (i < (LEDS_PER_SIDE/2 - animate_frame));
+      
+      }
+    } else {
+      led_on_left = !side;
+      led_on_right = side;
+    }
+    setLEDValue(LEFT_SIDE, i, led_on_left ? max_brightness : 0);
+    setLEDValue(RIGHT_SIDE, i, led_on_right ? max_brightness : 0);
+  }
+};
+
+#define PULSE_LENGTH 5
+#define NUM_LED_VALUES LEDS_PER_SIDE+1
+#define MAX_PULSES 5
+class patternBeatPulseGenerator : public LedPattern {
+  //Each beat creates a pulse which travels down heart (top to bottom)
+  /*
+  protected:
+  
+  ColourScheme* colour_schemes[3] = {
+    new colourRainbow(0, 3),   
+    new colourChangeOnBeat(),
+    new colourRainbow(3, 3),   
+  };
+  byte num_colour_schemes = 3;
+  */
+  public:
+  patternBeatPulseGenerator(bool stack) {
+    stack=stack;
+    duration=240;
+  }
+  private:
+  byte pulses[MAX_PULSES]; //Contains positions of pulses (up to LEDS_PER_SIDE for full stack)
+  byte led_values[NUM_LED_VALUES];
+  bool  stack;
+  void frameAction()  {
+    int total_brightness;
+    static byte pulse_index, stack_level, skip_frames;
+    
+    if (stack_level < LEDS_PER_SIDE) {
+      if (!skip_frames)  {
+        // Clear LED values
+        for (byte i=0; i < NUM_LED_VALUES; i++)  {
+          if (i >= (NUM_LED_VALUES-stack_level))  {
+            led_values[i]=max_brightness;
+          } else {
+            led_values[i]=0;
+          }  
+        }
+        //Move all existing pulses positions and set LED values
+        for (byte i=0; i < MAX_PULSES; i++)  {
+          if (pulses[i])  {
+            if (pulses[i] == (NUM_LED_VALUES-stack_level-1)) {
+              if (stack)  {
+                stack_level++;
+              }
+               //Pulse ended
+               pulses[i] = 0;  
+            } else {
+              // Pulse move
+              pulses[i]++;
+              //Set values
+              for (byte j=0; j<=PULSE_LENGTH; j++)  {
+                if (pulses[i] > j)  {
+                  led_values[pulses[i]-(j+1)]=max_brightness/(j+1);
+                }
+              }
+            }      
+          }
+        }
+        skip_frames=1;
+      } else {
+        skip_frames--;
+      }
+
+      //Generate new pulse on beat
+      if (new_beat_pattern()) {
+        pulses[pulse_index] = 1;
+        led_values[0]=max_brightness;
+        //SHift pulse index (alternative to appending/removign from array)
+        if (pulse_index == MAX_PULSES-1)  {
+          pulse_index=0;
+        } else {
+          pulse_index++;
+        }
+      }
+    } else {
+      //When reach full stack, fade all away
+      if (skip_frames)  {
+        skip_frames--;
+      } else  {
+        total_brightness=0;
+        for (byte i=0; i < NUM_LED_VALUES; i++)  {
+          if (led_values[i])  {
+            led_values[i]=led_values[i]>>random(0,2);
+            total_brightness+=led_values[i];
+          }
+        }
+        if (total_brightness==0)  {
+          // Restart stack
+          stack_level=0;
+        }
+        skip_frames=3;
+      }
+    }
+  }
+  void setLED(byte i) {
+    if (i == LEDS_PER_SIDE-1) {
+      //Static part at top always on
+      setLEDValue(BOTH_SIDES, i, map(beat_level, 0, 255, 80, 255));
+    } else {
+      setLEDValue(BOTH_SIDES, i, led_values[LEDS_PER_SIDE-i-1]);
+    }
+  }
+};
+
+class patternFire : public LedPattern {
+  //All lights pulsing brightness with sine wave
+  public:
+  patternFire()  {
+    cooling_factor=50;//random(20,50);
+    sparking_factor=70;//random(10,100);
+    framerate_delay=3;//random(0,3);
+  }
+  private:
+  byte led_values[LEDS_PER_SIDE];
+  byte cooling_factor, sparking_factor, speed_delay;
+  void frameAction()  {
+    unsigned int cooldown;
+    // Step 1.  Cool down every cell a little
+    for( byte i = 0; i < LEDS_PER_SIDE; i++) {
+      cooldown = random(0, cooling_factor);//((cooling_factor * 10) / LEDS_PER_SIDE) + 2);
+      led_values[i] = byteSubtract(led_values[i], cooldown);
+    }
+    // Step 2.  Heat from each cell drifts 'up' and diffuses a little
+    for( byte k= LEDS_PER_SIDE - 1; k >= 2; k--) {
+      led_values[k] = (led_values[k - 1] + led_values[k - 2] + led_values[k - 2]) / 3;
+    }
+    // Step 3.  Randomly ignite new 'sparks' near the bottom
+    unsigned int scaled_factor;
+    for (byte s=0; s<5; s++)  {
+      scaled_factor = sparking_factor/(s+1);
+      // Base level fire
+      if (led_values[s] < 2*scaled_factor)  {
+        led_values[s] = 2*scaled_factor;
+      }
+      // Add sparkle
+      if (random(0,255) < (scaled_factor))  {
+        led_values[s] = byteAdd(led_values[s], random(sparking_factor<<1,sparking_factor<<2));
+      }
+      /*
+      if( random(180+(10*s)) < sparking_factor ) {
+        led_values[s] = byteAdd(led_values[s], random(160,255));
+      }
+      */
+    }
+    
+  }
+  void setLED(byte i) {
+    setLEDValue(BOTH_SIDES, i, map(led_values[i], 0, 255, 0, max_brightness));
+  }
+};
+
+LedPattern* LedPattern::GetRandom() {
+  static LedPattern* current_pattern;
+  byte pattern_id = random(0,NUM_PATTERNS);
+  Serial.print("Choosing pattern: ");
+  Serial.println(pattern_id);
+  delete[] current_pattern;
+  switch (pattern_id) {
+    case 0:
+      current_pattern = new patternFire();
+      break;
+    case 1:
+      current_pattern = new patternAlternateSides();
+      break;
+    case 2:
+      current_pattern = new patternMovingSineWave();
+      break;
+    case 3:
+      current_pattern = new patternBeatHeight();
+      break;
+    case 4:
+      current_pattern = new patternSolidBeatPulse();
+      break;
+    case 5:
+      current_pattern = new patternMovingSegments();
+      break;
+    case 6:
+      current_pattern = new patternRandomSparkle();
+      break;
+    case 7:
+      current_pattern = new patternSineWavePulse();
+      break;
+    case 8:
+      current_pattern = new patternBeatPulseGenerator(false);
+      break;
+     case 9:
+      current_pattern = new patternBeatPulseGenerator(true);
+      break;
+    default:
+      current_pattern = new patternMovingSineWave();
+      break;
+  }
+  current_pattern->initialise();
+  return current_pattern;
+}
+/*
+LedPattern* led_patterns[] = {
+  new patternBeatPulseGenerator(true),
+  new patternAlternateSides(),    
+  new patternMovingSineWave(),
+  new patternBeatHeight(), 
+  new patternSolidBeatPulse(),
+  new patternMovingSegments(),
+  new patternRandomSparkle(),
+  new patternSineWavePulse(),
+  new patternBeatPulseGenerator(false),
+};
+*/
